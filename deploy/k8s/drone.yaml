@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drone-sim
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: drone-sim
+  template:
+    metadata:
+      labels:
+        app: drone-sim
+    spec:
+      containers:
+        - name: drone
+          image: drone-drone:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONTROL_ADDR
+              value: "drone-control:8081"
