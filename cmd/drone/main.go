@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	fleetv1 "drone-fleet/gen/fleet/v1"
+	fleetv1 "uav-satellite-sim/gen/fleet/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

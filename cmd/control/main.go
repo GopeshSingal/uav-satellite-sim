@@ -9,9 +9,10 @@ import (
 	"sync"
 	"time"
 
-	fleetv1 "drone-fleet/gen/fleet/v1"
+	fleetv1 "uav-satellite-sim/gen/fleet/v1"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 
@@ -44,6 +45,8 @@ func main() {
 	
 	grpcServer := grpc.NewServer()
 	fleetv1.RegisterFleetControlServer(grpcServer, newServer())
+
+	reflection.Register(grpcServer)
 
 	log.Println("Control gRPC listening on port 8081")
 	log.Fatal(grpcServer.Serve(lis))

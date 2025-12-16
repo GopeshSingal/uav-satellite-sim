@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package fleet.v1;
-option go_package = "drone-fleet/gen/fleet/v1;fleetv1";
+option go_package = "uav-satellite-sim/gen/fleet/v1;fleetv1";
 
 message Position {
   double x = 1;
