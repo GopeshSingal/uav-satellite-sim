@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package fleet.v1;
+option go_package = "drone-fleet/gen/fleet/v1;fleetv1";
+
+message Position {
+  double x = 1;
+  double y = 2;
+  double alt = 3;
+}
+
+enum DroneStatus {
+  DRONE_STATUS_UNSPECIFIED = 0;
+  DRONE_STATUS_IDLE = 1;
+  DRONE_STATUS_EN_ROUTE = 2;
+  DRONE_STATUS_DONE = 3;
+  DRONE_STATUS_OFFLINE = 4;
+}
+
+message DroneState {
+  string drone_id = 1;
+  Position position = 2;
+  double battery = 3;
+  DroneStatus status = 4;
+  int64 updated_at_unix_ms = 5;
+}
+
+message RegisterRequest {
+  string drone_id = 1;
+}
+
+message RegisterResponse {
+  bool ok = 1;
+}
+
+message SubscribeCommandsRequest {
+  string drone_id = 1;
+}
+
+message Mission {
+  string mission_id = 1;
+  repeated Position waypoints = 2;
+}
+
+message Command {
+  oneof payload {
+    Mission assign_mission = 1;
+    Mission cancel_mission = 2;
+  }
+}
+
+message Telemetry {
+  DroneState state = 1;
+}
+
+message TelemetryAck {
+  int64 received = 1;
+}
+
+message AssignMissionRequest {
+  string drone_id = 1;
+  repeated Position waypoints = 2;
+}
+
+message AssignMissionResponse {
+  string mission_id = 1;
+  bool pushed = 2;
+}
+
+message ListDronesRequest {}
+
+message ListDronesResponse {
+  repeated DroneState drones = 1;
+}
+
+service FleetControl {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  rpc SubscribeCommands(SubscribeCommandsRequest) returns (stream Command);
+
+  rpc TelemetryStream(stream Telemetry) returns (TelemetryAck);
+
+  rpc AssignMission(AssignMissionRequest) returns (AssignMissionResponse);
+
+  rpc ListDrones(ListDronesRequest) returns (ListDronesResponse);
+}
