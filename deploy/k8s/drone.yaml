@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: drone-sim
+  namespace: uav-sim
 spec:
   replicas: 5
   selector:
@@ -14,7 +15,7 @@ spec:
     spec:
       containers:
         - name: drone
-          image: drone-drone:dev
+          image: uav-drone:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: CONTROL_ADDR
