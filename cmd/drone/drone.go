@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	fleetv1 "uav-satellite-sim/gen/fleet/v1"
@@ -36,15 +37,22 @@ func main() {
 	defer conn.Close()
 
 	client := fleetv1.NewFleetControlClient(conn)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	_, err = client.Register(ctx, &fleetv1.RegisterRequest{DroneId: droneID})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	cmdStream, _ := client.SubscribeCommands(ctx, &fleetv1.SubscribeCommandsRequest{DroneId: droneID})
-	telStream, _ := client.TelemetryStream(ctx)
+	cmdStream, err := client.SubscribeCommands(ctx, &fleetv1.SubscribeCommandsRequest{DroneId: droneID})
+	if err != nil {
+		log.Fatal(err)
+	}
+	telStream, err := client.TelemetryStream(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	state := &fleetv1.DroneState{
 		DroneId: droneID,
@@ -58,35 +66,54 @@ func main() {
 	}
 
 	var cur mission
+	var curMu sync.RWMutex
 
 	go func() {
 		for {
 			cmd, err := cmdStream.Recv()
 			if err != nil {
+				log.Printf("Command stream closed: %v", err)	
 				return
 			}
 			if m := cmd.GetAssignMission(); m != nil {
-				cur = mission{id: m.MissionId, waypoints: m.Waypoints}
+				curMu.Lock()
+				cur = mission{id: m.MissionId, waypoints: m.Waypoints, wp: 0}
+				curMu.Unlock()
 				log.Printf("Received mission=%s", m.MissionId)
 			}
 		}
 	}()
 
 	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 	for range ticker.C {
-		if cur.id != "" && cur.wp < len(cur.waypoints) {
+		curMu.RLock()
+		active := cur.id != "" && cur.wp < len(cur.waypoints)
+		var target *fleetv1.Position
+		if active {
+			target = cur.waypoints[cur.wp]
+		}
+		curMu.RUnlock()
+		
+		if active {
 			state.Status = fleetv1.DroneStatus_DRONE_STATUS_EN_ROUTE
-			if step(state.Position, cur.waypoints[cur.wp], 3) {
+			if step(state.Position, target, 3) {
+				curMu.Lock()
 				cur.wp++
+				curMu.Unlock()
 			}
 			state.Battery -= 0.3
+			if state.Battery < 0 {
+				state.Battery = 0
+			}
 		} else {
 			state.Status = fleetv1.DroneStatus_DRONE_STATUS_IDLE
 		}
 
 		state.UpdatedAtUnixMs = time.Now().UnixMilli()
-		_ = telStream.Send(&fleetv1.Telemetry{State: state})
-
+		if err := telStream.Send(&fleetv1.Telemetry{State: state}); err != nil {
+			log.Printf("Telemetry send failed: %v", err)
+		}
 		log.Printf("Drone=%s pos=(%.1f, %.1f) batt=%.1f",
 			droneID, state.Position.X, state.Position.Y, state.Battery)
 	}

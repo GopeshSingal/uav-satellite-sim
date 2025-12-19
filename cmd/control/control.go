@@ -13,24 +13,34 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/codes"
+    "google.golang.org/grpc/status"
 )
+
+
+type droneSession struct {
+	mailbox    chan *fleetv1.Command
+	stopSender chan struct{}
+	senderOnce sync.Once
+}
 
 
 type server struct {
 	fleetv1.UnimplementedFleetControlServer
 
-	mu	   sync.RWMutex
+	mu	       sync.RWMutex
 	drones     map[string]*fleetv1.DroneState
-	cmdStreams map[string]fleetv1.FleetControl_SubscribeCommandsServer
 	lastSeen   map[string]time.Time
+
+	sessions   map[string]*droneSession
 }
 
 
 func newServer() *server {
 	return &server{
-		drones: make(map[string]*fleetv1.DroneState),
-		cmdStreams: make(map[string]fleetv1.FleetControl_SubscribeCommandsServer),
+		drones:   make(map[string]*fleetv1.DroneState),
 		lastSeen: make(map[string]time.Time),
+		sessions: make(map[string]*droneSession),
 	}
 }
 
@@ -50,6 +60,19 @@ func main() {
 
 	log.Println("Control gRPC listening on port 8081")
 	log.Fatal(grpcServer.Serve(lis))
+}
+
+
+func (s *server) getSessionLocked(id string) *droneSession {
+	ses, ok := s.sessions[id]
+	if !ok {
+		ses = &droneSession{
+			mailbox:    make(chan *fleetv1.Command, 64),
+			stopSender: make(chan struct{}),
+		}
+		s.sessions[id] = ses
+	}
+	return ses
 }
 
 
@@ -76,21 +99,59 @@ func (s *server) Register(ctx context.Context, req *fleetv1.RegisterRequest) (*f
 }
 
 
+func (s *server) senderLoop(id string, stream fleetv1.FleetControl_SubscribeCommandsServer, mailbox <-chan *fleetv1.Command, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-stream.Context().Done():
+			return
+		case cmd := <-mailbox:
+			if cmd == nil {
+				continue
+			}
+			if err := stream.Send(cmd); err != nil {
+				log.Printf("Send to drone=%s failed: %v", id, err)
+				return
+			}
+		}
+	}
+}
+
+
 func (s *server) SubscribeCommands(req *fleetv1.SubscribeCommandsRequest, stream fleetv1.FleetControl_SubscribeCommandsServer) error {
-	id := req.DroneId
-	log.Printf("Commands stream open for drone=%s", id)
+	id := req.GetDroneId()
+	if id == "" {
+		return status.Error(codes.InvalidArgument, "drone_id required!")
+	}
 
 	s.mu.Lock()
-	s.cmdStreams[id] = stream
+	ses := s.getSessionLocked(id)
+
+	close(ses.stopSender)
+	ses.stopSender = make(chan struct{})
+	stop := ses.stopSender
+	mailbox := ses.mailbox
 	s.mu.Unlock()
+
+	log.Printf("Commands stream opened for drone=%s", id)
+
+	go s.senderLoop(id, stream, mailbox, stop)
 
 	<-stream.Context().Done()
 
 	s.mu.Lock()
-	delete(s.cmdStreams, id)
+	ses2 := s.sessions[id]
+	if ses2 != nil {
+		select {
+		case <-ses2.stopSender:
+		default:
+			close(ses2.stopSender)
+		}
+	}
 	s.mu.Unlock()
 
-	log.Printf("Commands stream closed for drone=%s)", id)
+	log.Printf("Commands stream closed for drone=%s", id)
 	return nil
 }
 
@@ -116,30 +177,37 @@ func (s *server) TelemetryStream(stream fleetv1.FleetControl_TelemetryStreamServ
 
 
 func (s *server) AssignMission(ctx context.Context, req *fleetv1.AssignMissionRequest) (*fleetv1.AssignMissionResponse, error) {
-	s.mu.RLock()
-	stream, ok := s.cmdStreams[req.DroneId]
-	s.mu.RUnlock()
+	id := req.GetDroneId()
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "drone_id required!")
+	}
 
 	mid := "m_" + randSeq(8)
-	if !ok {
-		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
-	}
 
 	cmd := &fleetv1.Command{
 		Payload: &fleetv1.Command_AssignMission{
 			AssignMission: &fleetv1.Mission{
 				MissionId: mid,
-				Waypoints: req.Waypoints,
+				Waypoints: req.GetWaypoints(),
 			},
 		},
 	}
 
-	if err := stream.Send(cmd); err != nil {
+	s.mu.RLock()
+	ses := s.sessions[id]
+	s.mu.RUnlock()
+
+	if ses == nil {
 		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
 	}
 
-	log.Printf("Mission pushed drone=%s mission=%s", req.DroneId, mid)
-	return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: true}, nil
+	select {
+	case ses.mailbox <- cmd:
+		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: true}, nil
+	default:
+		log.Printf("mailbox full for drone=%s, dropping command mission=%s", id, mid)
+		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
+	}
 }
 
 
