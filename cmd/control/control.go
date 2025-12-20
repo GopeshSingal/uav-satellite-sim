@@ -85,7 +85,7 @@ func (s *server) Register(ctx context.Context, req *fleetv1.RegisterRequest) (*f
 		s.drones[req.DroneId] = &fleetv1.DroneState{
 			DroneId: req.DroneId,
 			Position: &fleetv1.Position{
-				X: 0, Y: 0, Alt: 0,
+				X: 0, Y: 0, Z: 0,
 			},
 			Battery: 100,
 			Status: fleetv1.DroneStatus_DRONE_STATUS_IDLE,

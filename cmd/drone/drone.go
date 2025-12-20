@@ -59,7 +59,7 @@ func main() {
 		Position: &fleetv1.Position{
 			X:   rand.Float64() * 50,
 			Y:   rand.Float64() * 50,
-			Alt: 10,
+			Z:	 rand.Float64() * 50,
 		},
 		Battery: 100,
 		Status:  fleetv1.DroneStatus_DRONE_STATUS_IDLE,
@@ -114,22 +114,22 @@ func main() {
 		if err := telStream.Send(&fleetv1.Telemetry{State: state}); err != nil {
 			log.Printf("Telemetry send failed: %v", err)
 		}
-		log.Printf("Drone=%s pos=(%.1f, %.1f) batt=%.1f",
-			droneID, state.Position.X, state.Position.Y, state.Battery)
+		log.Printf("Drone=%s, pos=(%.1f, %.1f, %.1f) batt=%.1f",
+			droneID, state.Position.X, state.Position.Y, state.Position.Z, state.Battery)
 	}
 }
 
 func step(p *fleetv1.Position, t *fleetv1.Position, s float64) bool {
-	dx, dy := t.X-p.X, t.Y-p.Y
-	d := math.Hypot(dx, dy)
+	dx, dy, dz := t.X-p.X, t.Y-p.Y, t.Z-p.Z
+	d := math.Sqrt(dx*dx + dy*dy + dz*dz)
 	if d < 0.01 {
-		p.X, p.Y, p.Alt = t.X, t.Y, t.Alt
+		p.X, p.Y, p.Z = t.X, t.Y, t.Z
 		return true
 	}
-
-	p.X += dx / d * math.Min(s, d)
-	p.Y += dy / d * math.Min(s, d)
-	p.Alt = t.Alt
+	step := math.Min(s, d)
+	p.X += dx / d * step
+	p.Y += dy / d * step
+	p.Z += dz / d * step
 	return s >= d
 }
 

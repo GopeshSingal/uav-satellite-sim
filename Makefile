@@ -1,3 +1,5 @@
+.PHONY: proto
+
 # ----- Config -----
 PROJECT            := uav-satellite-sim
 NAMESPACE          := uav-sim
