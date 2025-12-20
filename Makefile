@@ -1,5 +1,5 @@
 # ----- Config -----
-PROJECT            := uav-satelllite-sim
+PROJECT            := uav-satellite-sim
 NAMESPACE          := uav-sim
 CLUSTER            := uav-sim
 
@@ -26,7 +26,7 @@ test:
 
 proto:
 	@rm -rf $(GEN)
-	@mkdir -p @(GEN)
+	@mkdir -p $(GEN)
 	protoc \
 		--go_out=./$(GEN) \
 		--go_opt=module=$(PROJECT) \
@@ -56,11 +56,11 @@ kind-lock: docker-build
 ns:
 	@kubectl get namespace $(NAMESPACE) >/dev/null 2>&1 || kubectl create namespace $(NAMESPACE)
 
-deploy:
+launch:
 	kubectl apply -n $(NAMESPACE) -f $(K8S_CONTROL_YAML)
 	kubectl apply -n $(NAMESPACE) -f $(K8S_DRONE_YAML)
 
-delete:
+unlaunch:
 	kubectl delete -n $(NAMESPACE) -f $(K8S_CONTROL_YAML)
 	kubectl delete -n $(NAMESPACE) -f $(K8S_DRONE_YAML)
 
