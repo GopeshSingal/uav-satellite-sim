@@ -30,9 +30,9 @@ proto:
 	@rm -rf $(GEN)
 	@mkdir -p $(GEN)
 	protoc \
-		--go_out=./$(GEN) \
+		--go_out=. \
 		--go_opt=module=$(PROJECT) \
-		--go-grpc_out=./$(GEN) \
+		--go-grpc_out=. \
 		--go-grpc_opt=module=$(PROJECT) \
 		$(PROTO)
 	@echo "Generated into $(GEN)/"
