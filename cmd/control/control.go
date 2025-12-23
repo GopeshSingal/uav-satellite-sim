@@ -8,6 +8,12 @@ import (
 	"net"
 	"sync"
 	"time"
+	"encoding/json"
+	"net/http"
+	"fmt"
+	"io"
+	"os"
+	"bytes"
 
 	fleetv1 "uav-satellite-sim/gen/fleet/v1"
 
@@ -25,6 +31,14 @@ type droneSession struct {
 }
 
 
+type routerClient struct {
+	baseURL      string
+	controlRange float64
+	droneRange   float64
+	http         *http.Client
+}
+
+
 type server struct {
 	fleetv1.UnimplementedFleetControlServer
 
@@ -33,6 +47,8 @@ type server struct {
 	lastSeen   map[string]time.Time
 
 	sessions   map[string]*droneSession
+
+	router     *routerClient
 }
 
 
@@ -45,6 +61,29 @@ func newServer() *server {
 }
 
 
+func envFloat(k string, def float64) float64 {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	var out float64
+	_, err := fmt.Sscan(v, "%f", &out)
+	if err != nil {
+		log.Fatalf("Invalid %s=%q (want float): %v", k, v, err)
+	}
+	return out
+}
+
+
+func mustEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		log.Fatalf("Missing env %s", k)
+	}
+	return v
+}
+
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -52,9 +91,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	
+
+	s := newServer()
+	s.router = &routerClient{
+		baseURL:      mustEnv("ROUTER_ADDR"),
+		controlRange: envFloat("CONTROL_RANGE", 35),
+		droneRange:   envFloat("DRONE_RANGE", 20),
+		http:         &http.Client{Timeout: 800 * time.Millisecond},
+	}
+
 	grpcServer := grpc.NewServer()
-	fleetv1.RegisterFleetControlServer(grpcServer, newServer())
+	fleetv1.RegisterFleetControlServer(grpcServer, s)
 
 	reflection.Register(grpcServer)
 
@@ -175,6 +222,94 @@ func (s *server) TelemetryStream(stream fleetv1.FleetControl_TelemetryStreamServ
 	}
 }
 
+func (s *server) SubmitTelemetry(ctx context.Context, msg *fleetv1.Telemetry) (*fleetv1.TelemetryAck, error) {
+	st := msg.GetState()
+	if st == nil || st.DroneId == "" {
+		return nil, status.Error(codes.InvalidArgument, "telemetry.state.drone_id required")
+	}
+	st.UpdatedAtUnixMs = time.Now().UnixMilli()
+
+	s.mu.Lock()
+	s.drones[st.DroneId] = st
+	s.lastSeen[st.DroneId] = time.Now()
+	s.mu.Unlock()
+
+	return &fleetv1.TelemetryAck{Received: 1}, nil
+}
+
+
+type rVec3 struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
+
+type rDrone struct {
+	ID string `json:"id"`
+	Pos rVec3 `json:"pos"`
+}
+
+
+type routeReq struct {
+	Drones []rDrone `json:"drones"`
+	ControlPos rVec3 `json:"control_pos"`
+	ControlRange float64 `json:"control_range"`
+	DroneRange float64 `json:"drone_range"`
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+	Weighted bool `json:"weighted"`
+}
+
+
+type routeResp struct {
+	Ok bool `json:"ok"`
+	Path []string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+
+func (r *routerClient) Route(ctx context.Context, drones map[string]*fleetv1.DroneState, src, dst string) ([]string, bool, string) {
+	ds := make([]rDrone, 0, len(drones))
+	for id, st := range drones {
+		p := st.GetPosition()
+		if id == "" || p == nil {
+			continue
+		}
+		ds = append(ds, rDrone{ID: id, Pos: rVec3{X: p.X, Y: p.Y, Z: p.Z}})
+	}
+
+	reqBody := routeReq{
+		Drones: ds,
+		ControlPos: rVec3{X: 0, Y: 0, Z: 0},
+		ControlRange: r.controlRange,
+		DroneRange: r.droneRange,
+		Src: src,
+		Dst: dst,
+		Weighted: false,
+	}
+
+	b, _ := json.Marshal(reqBody)
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/route", io.NopCloser(bytes.NewReader(b)))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.http.Do(httpReq)
+	if err != nil {
+		return nil, false, err.Error()
+	}
+	defer resp.Body.Close()
+	outB, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, false, fmt.Sprintf("router status=%d body=%s", resp.StatusCode, string(outB))
+	}
+
+	var rr routeResp
+	if err := json.Unmarshal(outB, &rr); err != nil {
+		return nil, false, rr.Reason
+	}
+	return rr.Path, true, ""
+}
+
 
 func (s *server) AssignMission(ctx context.Context, req *fleetv1.AssignMissionRequest) (*fleetv1.AssignMissionResponse, error) {
 	id := req.GetDroneId()
@@ -192,20 +327,59 @@ func (s *server) AssignMission(ctx context.Context, req *fleetv1.AssignMissionRe
 			},
 		},
 	}
+	
+	s.mu.RLock()
+	dcopy := make(map[string]*fleetv1.DroneState, len(s.drones))
+	for k, v := range s.drones {
+		dcopy[k] = v
+	}
+	s.mu.RUnlock()
+
+	rctx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	path, ok, reason := s.router.Route(rctx, dcopy, "__CONTROL__", id)
+	cancel()
+
+	if !ok || len(path) < 2 || path[0] != "__CONTROL__" {
+		log.Printf("router: no path control->%s (mission=%s): %s", id, mid, reason)
+		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
+	}
+
+	firstHop := path[1]
 
 	s.mu.RLock()
-	ses := s.sessions[id]
+	ses := s.sessions[firstHop]
 	s.mu.RUnlock()
 
 	if ses == nil {
 		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
 	}
 
+	if len(path) == 2 && firstHop == id {
+		select {
+		case ses.mailbox <- cmd:
+			return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: true}, nil
+		default:
+			log.Printf("mailbox ful for drone=%s, dropping mission=%s", id, mid)
+			return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
+		}
+	}
+
+	relay := &fleetv1.Command{
+		Payload: &fleetv1.Command_RelayMission{
+			RelayMission: &fleetv1.RelayMissionRequest {
+				Mission: &fleetv1.Mission{MissionId: mid, Waypoints: req.GetWaypoints()},
+				Path:    path[1:],
+				Index:   0,
+			},
+		},
+	}
+
 	select {
-	case ses.mailbox <- cmd:
+	case ses.mailbox <- relay:
+		log.Printf("mission=%s routed to %s via %v", mid, id, path[1:])
 		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: true}, nil
 	default:
-		log.Printf("mailbox full for drone=%s, dropping command mission=%s", id, mid)
+		log.Printf("mailbox full for firstHop=%s (dest=%s), dropping mission=%s", firstHop, id, mid)
 		return &fleetv1.AssignMissionResponse{MissionId: mid, Pushed: false}, nil
 	}
 }
