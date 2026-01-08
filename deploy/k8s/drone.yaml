@@ -1,9 +1,10 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: drone-sim
   namespace: uav-sim
 spec:
+  serviceName: drone-sim
   replicas: 5
   selector:
     matchLabels:
@@ -17,6 +18,29 @@ spec:
         - name: drone
           image: uav-drone:dev
           imagePullPolicy: IfNotPresent
+          ports:
+            - name: relay
+              containerPort: 8082
           env:
             - name: CONTROL_ADDR
               value: "drone-control:8081"
+            - name: DRONE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: DRONE_HEADLESS_SERVICE
+              value: "drone-sim"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drone-sim
+  namespace: uav-sim
+spec:
+  clusterIP: None
+  selector:
+    app: drone-sim
+  ports:
+    - name: replay
+      port: 8082
+      targetPort: 8082
