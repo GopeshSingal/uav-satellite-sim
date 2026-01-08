@@ -118,9 +118,9 @@ func main() {
 	state := &fleetv1.DroneState{
 		DroneId: droneID,
 		Position: &fleetv1.Position{
-			X:   rand.Float64() * 50,
-			Y:   rand.Float64() * 50,
-			Z:	 rand.Float64() * 50,
+			X:   rand.Float64() * 10,
+			Y:   rand.Float64() * 10,
+			Z:	 rand.Float64() * 10,
 		},
 		Battery: 100,
 		Status:  fleetv1.DroneStatus_DRONE_STATUS_IDLE,

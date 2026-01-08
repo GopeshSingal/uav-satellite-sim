@@ -83,13 +83,13 @@ def path_metrics(path: List[str], g: nx.Graph, req: RouteRequest) -> RouteMetric
     bottleneck = 0.0
 
     for u, v in zip(path, path[1:]):
-        w = float(g[u][v].get("weight", 0,0))
+        w = float(g[u][v].get("weight", 0.0))
         total += w
         bottleneck = max(bottleneck, w)
 
     bottleneck_margin = float('inf')
     for u, v in zip(path, path[1:]):
-        w = float(g[u][v].get("weight", 0,0))
+        w = float(g[u][v].get("weight", 0.0))
         cap = req.drone_range
         if u == CONTROL_NODE or v == CONTROL_NODE:
             cap = req.control_range

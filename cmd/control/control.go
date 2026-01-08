@@ -67,7 +67,7 @@ func envFloat(k string, def float64) float64 {
 		return def
 	}
 	var out float64
-	_, err := fmt.Sscan(v, "%f", &out)
+	_, err := fmt.Sscan(v, &out)
 	if err != nil {
 		log.Fatalf("Invalid %s=%q (want float): %v", k, v, err)
 	}
