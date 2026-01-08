@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -13,12 +15,66 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type mission struct {
 	id        string
 	waypoints []*fleetv1.Position
 	wp        int
+}
+
+type relayServer struct {
+	fleetv1.UnimplementedDroneRelayServer
+
+	selfID string
+	peerSvc string
+
+	onMission func(m * fleetv1.Mission)
+}
+
+func (r *relayServer) peerAddr(droneID string) string {
+	return fmt.Sprintf("%s.%s:8082", droneID, r.peerSvc)
+}
+
+func (r *relayServer) RelayMission(ctx context.Context, msg *fleetv1.RelayMissionRequest) (*fleetv1.RelayAck, error) {
+	if msg == nil || len(msg.Path) == 0 || msg.Mission == nil {
+		return nil, status.Error(codes.InvalidArgument, "RelayMission requires mission and path!")
+	}
+	i := int(msg.Index)
+	if i < 0 || i > len(msg.Path) {
+		return nil, status.Error(codes.InvalidArgument, "RelayMission index out of range!")
+	}
+	if msg.Path[i] != r.selfID {
+		return nil, status.Error(codes.InvalidArgument, "RelayMission path ID does not match self ID")
+	}
+
+	if i == len(msg.Path) - 1 {
+		r.onMission(msg.Mission)
+		return &fleetv1.RelayAck{Ok: true, Message: "delivered"}, nil
+	}
+
+	next := msg.Path[i + 1]
+	conn, err := grpc.Dial(r.peerAddr(next), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return &fleetv1.RelayAck{Ok: false, Message: "Dial next hop failed"}, nil
+	}
+	defer conn.Close()
+
+	_, err = fleetv1.NewDroneRelayClient(conn).RelayMission(ctx, &fleetv1.RelayMissionRequest{
+		Mission: msg.Mission,
+		Path:    msg.Path,
+		Index:   uint32(i + 1),
+	})
+	if err != nil {
+		return &fleetv1.RelayAck{Ok: false, Message: "Failed to forward"}, nil
+	}
+	return &fleetv1.RelayAck{Ok: true, Message: "Forwarded"}, nil
+}
+
+func (r *relayServer) RelayTelemetry(ctx context.Context, msg *fleetv1.RelayTelemetryRequest) (*fleetv1.RelayAck, error) {
+	return &fleetv1.RelayAck{Ok: false, Message: "Not implemented"}, nil
 }
 
 func main() {
@@ -28,6 +84,11 @@ func main() {
 	droneID := os.Getenv("DRONE_ID")
 	if droneID == "" {
 		droneID = "drone-" + randSeq(4)
+	}
+
+	peerSvc := os.Getenv("DRONE_HEADLESS_SERVICE")
+	if peerSvc == "" {
+		peerSvc = "drone-sim"
 	}
 
 	conn, err := grpc.Dial(control, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -67,6 +128,27 @@ func main() {
 
 	var cur mission
 	var curMu sync.RWMutex
+	
+	go func() {
+		lis, err := net.Listen("tcp", ":8082")
+		if err != nil {
+			log.Fatalf("Relay listen failed: %v", err)
+		}
+
+		gs := grpc.NewServer()
+		fleetv1.RegisterDroneRelayServer(gs, &relayServer{
+			selfID: droneID,
+			peerSvc: peerSvc,
+			onMission: func(m *fleetv1.Mission) {
+				curMu.Lock()
+				cur = mission{id: m.MissionId, waypoints: m.Waypoints, wp: 0}
+				curMu.Unlock()
+				log.Printf("Relayed mission delivered=%s", m.MissionId)
+			},
+		})
+		log.Printf("DroneRelay listening on :8082 (id=%s)", droneID)
+		log.Fatal(gs.Serve(lis))
+	}()
 
 	go func() {
 		for {
@@ -80,6 +162,36 @@ func main() {
 				cur = mission{id: m.MissionId, waypoints: m.Waypoints, wp: 0}
 				curMu.Unlock()
 				log.Printf("Received mission=%s", m.MissionId)
+			}
+			if rm := cmd.GetRelayMission(); rm != nil {
+				i := int(rm.Index)
+				if i < 0 || i >= len(rm.Path) || rm.Path[i] != droneID {
+					log.Printf("Bad relay mission: idx=%d, path=%v, self=%s", i, rm.Path, droneID)
+					continue
+				}
+				if i == len(rm.Path) - 1 {
+					curMu.Lock()
+					cur = mission{id: rm.Mission.MissionId, waypoints: rm.Mission.Waypoints, wp: 0}
+					curMu.Unlock()
+					log.Printf("Received relayed mission=%s", rm.Mission.MissionId)
+					continue
+				}
+				next := rm.Path[i + 1]
+				addr := fmt.Sprintf("%s.%s:8082", next, peerSvc)
+				pc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+				if err != nil {
+					log.Printf("Dial next hop failed: %v", err)
+					continue
+				}
+				_, err = fleetv1.NewDroneRelayClient(pc).RelayMission(ctx, &fleetv1.RelayMissionRequest{
+					Mission: rm.Mission,
+					Path: 	 rm.Path,
+					Index:   uint32(i + 1),
+				})
+				_ = pc.Close()
+				if err != nil {
+					log.Printf("Forward relay mission failed: %v", err)
+				}
 			}
 		}
 	}()
