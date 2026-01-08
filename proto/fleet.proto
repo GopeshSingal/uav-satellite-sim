@@ -44,10 +44,16 @@ message Mission {
   repeated Position waypoints = 2;
 }
 
+message RelayMissionRequest {
+  Mission mission = 1;
+  repeated string path = 2;
+  uint32 index = 3;
+}
+
 message Command {
   oneof payload {
     Mission assign_mission = 1;
-    Mission cancel_mission = 2;
+    RelayMissionRequest relay_mission = 2;
   }
 }
 
@@ -57,6 +63,17 @@ message Telemetry {
 
 message TelemetryAck {
   int64 received = 1;
+}
+
+message RelayTelemetryRequest {
+  Telemetry telemetry = 1;
+  repeated string path = 2;
+  uint32 index = 3;
+}
+
+message RelayAck {
+  bool ok = 1;
+  string message = 2;
 }
 
 message AssignMissionRequest {
@@ -82,7 +99,15 @@ service FleetControl {
 
   rpc TelemetryStream(stream Telemetry) returns (TelemetryAck);
 
+  rpc SubmitTelemetry(Telemetry) returns (TelemetryAck);
+
   rpc AssignMission(AssignMissionRequest) returns (AssignMissionResponse);
 
   rpc ListDrones(ListDronesRequest) returns (ListDronesResponse);
+}
+
+service DroneRelay {
+  rpc RelayMission(RelayMissionRequest) returns (RelayAck);
+
+  rpc RelayTelemetry(RelayTelemetryRequest) returns (RelayAck);
 }

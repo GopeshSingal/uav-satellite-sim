@@ -7,11 +7,14 @@ CLUSTER            := uav-sim
 
 CONTROL_IMAGE      ?= uav-control:dev
 DRONE_IMAGE        ?= uav-drone:dev
+ROUTER_IMAGE	   ?= uav-router:dev
 
 CONTROL_DOCKERFILE := deploy/docker/control.Dockerfile
 DRONE_DOCKERFILE   := deploy/docker/drone.Dockerfile
+ROUTER_DOCKERFILE  := deploy/docker/router.Dockerfile
 K8S_CONTROL_YAML   := deploy/k8s/control.yaml
 K8S_DRONE_YAML     := deploy/k8s/drone.yaml
+K8S_ROUTER_YAML    := deploy/k8s/router.yaml
 
 PROTO              := proto/fleet.proto
 GEN                := gen
@@ -30,9 +33,9 @@ proto:
 	@rm -rf $(GEN)
 	@mkdir -p $(GEN)
 	protoc \
-		--go_out=./$(GEN) \
+		--go_out=. \
 		--go_opt=module=$(PROJECT) \
-		--go-grpc_out=./$(GEN) \
+		--go-grpc_out=. \
 		--go-grpc_opt=module=$(PROJECT) \
 		$(PROTO)
 	@echo "Generated into $(GEN)/"
@@ -42,7 +45,7 @@ proto:
 docker-build:
 	docker build -f $(CONTROL_DOCKERFILE) -t $(CONTROL_IMAGE) .
 	docker build -f $(DRONE_DOCKERFILE)   -t $(DRONE_IMAGE)   .
-
+	docker build -f $(ROUTER_DOCKERFILE)  -t $(ROUTER_IMAGE)  .
 
 # ----- k8s -----
 kind-create:
@@ -54,6 +57,7 @@ kind-delete:
 kind-lock: docker-build
 	kind load docker-image $(CONTROL_IMAGE) --name $(CLUSTER)
 	kind load docker-image $(DRONE_IMAGE)   --name $(CLUSTER)
+	kind load docker-image $(ROUTER_IMAGE)  --name $(CLUSTER)
 
 ns:
 	@kubectl get namespace $(NAMESPACE) >/dev/null 2>&1 || kubectl create namespace $(NAMESPACE)
@@ -61,8 +65,10 @@ ns:
 launch:
 	kubectl apply -n $(NAMESPACE) -f $(K8S_CONTROL_YAML)
 	kubectl apply -n $(NAMESPACE) -f $(K8S_DRONE_YAML)
+	kubectl apply -n $(NAMESPACE) -f $(K8S_ROUTER_YAML)
 
 unlaunch:
 	kubectl delete -n $(NAMESPACE) -f $(K8S_CONTROL_YAML)
 	kubectl delete -n $(NAMESPACE) -f $(K8S_DRONE_YAML)
+	kubectl delete -n $(NAMESPACE) -f $(K8S_ROUTER_YAML)
 
